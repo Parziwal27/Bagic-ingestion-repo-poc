@@ -1,0 +1,3 @@
+# extra python packages your DAGs may need
+pandas
+requests
