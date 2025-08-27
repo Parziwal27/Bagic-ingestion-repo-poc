@@ -1,0 +1,33 @@
+name: Deploy DAGs to Prod Airflow
+
+on:
+  push:
+    branches: [ "main" ]
+    paths:
+      - "dags/ingestion/**"
+      - ".github/workflows/deploy-prod.yml"
+  workflow_dispatch:   # allows manual trigger from GitHub UI
+
+env:
+  AWS_REGION: ap-south-1
+  # only prod bucket since you said dev/uat not needed now
+  S3_BUCKET_DEV: ${{ secrets.S3_BUCKET_DEV }}
+
+jobs:
+  deploy:
+    name: Deploy DAGs to Prod
+    runs-on: [self-hosted, Linux, X64]   # 👈 your EC2 runner
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: AWS identity check
+        run: aws sts get-caller-identity
+
+      - name: Upload DAGs to S3 (prod)
+        run: |
+          BUCKET=${{ env.S3_BUCKET_DEV }}
+          echo "Deploying DAGs to s3://$BUCKET/dags/"
+          aws s3 sync dags/ingestion "s3://$BUCKET/dags/" \
+            --exclude "*" --include "*.py" \
+            --delete --only-show-errors
+
