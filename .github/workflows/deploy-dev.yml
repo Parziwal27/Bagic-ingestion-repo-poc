@@ -27,7 +27,7 @@ jobs:
         run: |
           BUCKET=${{ env.S3_BUCKET_DEV }}
           echo "Deploying DAGs to s3://$BUCKET/dags/"
-          aws s3 sync dags/ingestion "s3://$BUCKET/dags/" \
+          aws s3 sync dags/ingestion "s3://$BUCKET/dags1234/" \
             --exclude "*" --include "*.py" \
             --delete --only-show-errors
 
