@@ -11,7 +11,7 @@ on:
     branches: [ main ]
 
 permissions:
-  contents: write          # to enable auto-merge & create comments
+  contents: write       # to enable auto-merge & create comments
   pull-requests: write
 
 env:
@@ -72,8 +72,11 @@ jobs:
             const pr = context.payload.pull_request;
             if (!pr) return;
             const { owner, repo } = context.repo;
+            
             await github.rest.issues.createComment({
-              owner, repo, issue_number: pr.number,
+              owner,
+              repo,
+              issue_number: pr.number,
               body: "✅ CI passed. ⏳ Waiting for review approval. Auto-merge will be enabled once approved."
             });
 
@@ -81,52 +84,85 @@ jobs:
   # Enable auto-merge after approval
   # -------------------------------------------------------------------
   enable-auto-merge:
-    name: Enable auto-merge (when approved)
+    name: Enable auto-merge
     runs-on: [self-hosted, Linux, X64]
-    needs: []
-    if: >
-      (github.event_name == 'pull_request' && contains(fromJson('["opened","synchronize","reopened","ready_for_review"]'), github.event.action))
-      || (github.event_name == 'pull_request_review' && github.event.review.state == 'approved')
+    # Only run after CI passes for PR events, or directly for review events
+    needs: [ci]
+    # This job should run when CI passes OR when a review is submitted
+    if: |
+      always() && 
+      (needs.ci.result == 'success' || needs.ci.result == 'skipped') &&
+      (github.event_name == 'pull_request' || 
+       (github.event_name == 'pull_request_review' && github.event.review.state == 'approved'))
     steps:
-      - name: Try to enable auto-merge
+      - name: Check for approvals and enable auto-merge
         uses: actions/github-script@v7
         with:
           script: |
-            const isPR = !!context.payload.pull_request;
+            // Determine the PR based on event type
+            const isPR = github.event_name === 'pull_request';
             const pr = isPR ? context.payload.pull_request : context.payload.review?.pull_request;
-            if (!pr) return;
-
+            
+            if (!pr) {
+              console.log('No PR found in context');
+              return;
+            }
+            
             const { owner, repo } = context.repo;
             const pull_number = pr.number;
-
-            const reviews = await github.rest.pulls.listReviews({ owner, repo, pull_number, per_page: 100 });
+            
+            // Fetch current reviews
+            const reviews = await github.rest.pulls.listReviews({
+              owner,
+              repo,
+              pull_number,
+              per_page: 100
+            });
+            
             const approvals = reviews.data.filter(r => r.state === "APPROVED");
+            
             if (approvals.length < 1) {
               await github.rest.issues.createComment({
-                owner, repo, issue_number: pull_number,
+                owner,
+                repo,
+                issue_number: pull_number,
                 body: "🕒 Auto-merge pending: waiting for at least **one approval**."
               });
               return;
             }
-
+            
+            // Try to enable auto-merge
             const mutation = `
               mutation($prId: ID!) {
-                enablePullRequestAutoMerge(input: { pullRequestId: $prId, mergeMethod: SQUASH }) {
+                enablePullRequestAutoMerge(input: {
+                  pullRequestId: $prId,
+                  mergeMethod: SQUASH
+                }) {
                   clientMutationId
                 }
-              }`;
+              }
+            `;
+            
             try {
               await github.graphql(mutation, { prId: pr.node_id });
               await github.rest.issues.createComment({
-                owner, repo, issue_number: pull_number,
+                owner,
+                repo,
+                issue_number: pull_number,
                 body: "🤖 Auto-merge **enabled** (merge method: SQUASH). GitHub will merge automatically when all required checks are green."
               });
             } catch (e) {
-              core.warning(e.message);
-              await github.rest.issues.createComment({
-                owner, repo, issue_number: pull_number,
-                body: "⚠️ Could not enable auto-merge automatically. Please click **Enable auto-merge** in the PR manually."
-              });
+              console.log('Auto-merge error:', e.message);
+              
+              // Only post comment if it's not already enabled
+              if (!e.message.includes('already enabled')) {
+                await github.rest.issues.createComment({
+                  owner,
+                  repo,
+                  issue_number: pull_number,
+                  body: "⚠️ Could not enable auto-merge automatically. Please click **Enable auto-merge** in the PR manually.\n\nError: " + e.message
+                });
+              }
             }
 
   # ------------------------------------
@@ -135,7 +171,7 @@ jobs:
   deploy:
     name: Deploy to Prod
     runs-on: [self-hosted, Linux, X64]
-    if: github.event_name == 'push'
+    if: github.event_name == 'push' && github.ref == 'refs/heads/main'
     steps:
       - uses: actions/checkout@v4
 
@@ -149,4 +185,3 @@ jobs:
           aws s3 sync dags/ingestion "s3://$BUCKET/dags1234/" \
             --exclude "*" --include "*.py" \
             --delete --only-show-errors
-
