@@ -18,4 +18,3 @@ with DAG(
         task_id="print_message",
         python_callable=_print_message,
     )
-
