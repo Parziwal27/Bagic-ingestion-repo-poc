@@ -34,20 +34,20 @@ jobs:
     runs-on: [self-hosted, Linux, X64]
     steps:
       - uses: actions/checkout@v4
-
-      - name: Python version
-        run: python3 --version || true
-
+      - name: Show Python & pip (sanity)
+        run: |
+          which python3 || true
+          python3 --version
+          python3 -m pip --version
       - name: Install deps
         run: |
           python3 -m pip install --upgrade pip
-          pip install flake8 pytest
-
+          python3 -m pip install flake8 pytest
       - name: Lint
-        run: flake8 dags/ingestion
+        run: python3 -m flake8 dags/ingestion
 
       - name: Run tests
-        run: pytest -q
+        run: python3 -m pytest -q
 
       # Post a friendly status comment when CI passes
       - name: CI passed — waiting for approval
