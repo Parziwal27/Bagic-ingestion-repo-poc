@@ -1,0 +1,35 @@
+name: Deploy to Prod
+
+on:
+  push:
+    branches: [ main ]
+
+permissions:
+  contents: read
+
+env:
+  AWS_REGION: ap-south-1
+  S3_BUCKET_DEV: ${{ secrets.S3_BUCKET_DEV }}
+
+concurrency:
+  group: deploy-main
+  cancel-in-progress: true
+
+jobs:
+  deploy:
+    name: Deploy
+    runs-on: [self-hosted, Linux, X64]
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: AWS identity check
+        run: aws sts get-caller-identity
+
+      - name: Sync DAGs to S3
+        run: |
+          BUCKET=${{ env.S3_BUCKET_DEV }}
+          echo "Deploying DAGs to s3://$BUCKET/dags1234/"
+          aws s3 sync dags/ingestion "s3://$BUCKET/dags1234/" \
+            --exclude "*" --include "*.py" \
+            --delete --only-show-errors
+
