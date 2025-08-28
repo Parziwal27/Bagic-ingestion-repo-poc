@@ -4,17 +4,11 @@ on:
   pull_request:
     branches: [ main ]
     types: [opened, synchronize, reopened, ready_for_review]
-    paths:
-      - "dags/ingestion/**"
-      - ".github/workflows/**"
   pull_request_review:
     types: [submitted]
     branches: [ main ]
   push:
     branches: [ main ]
-    paths:
-      - "dags/ingestion/**"
-      - ".github/workflows/**"
 
 permissions:
   contents: write          # to enable auto-merge & create comments
@@ -34,20 +28,40 @@ jobs:
     runs-on: [self-hosted, Linux, X64]
     steps:
       - uses: actions/checkout@v4
+
+      # Detect file changes
+      - uses: dorny/paths-filter@v3
+        id: changes
+        with:
+          filters: |
+            ingestion:
+              - 'dags/ingestion/**'
+
       - name: Show Python & pip (sanity)
         run: |
           which python3 || true
           python3 --version
           python3 -m pip --version
+
+      # Run lint/tests only if ingestion changed
       - name: Install deps
+        if: steps.changes.outputs.ingestion == 'true'
         run: |
           python3 -m pip install --upgrade pip
           python3 -m pip install flake8 pytest
+
       - name: Lint
+        if: steps.changes.outputs.ingestion == 'true'
         run: python3 -m flake8 dags/ingestion
 
       - name: Run tests
+        if: steps.changes.outputs.ingestion == 'true'
         run: python3 -m pytest -q
+
+      # Mark job as passed when nothing relevant changed
+      - name: No ingestion changes
+        if: steps.changes.outputs.ingestion != 'true'
+        run: echo "No ingestion changes; CI passes by default."
 
       # Post a friendly status comment when CI passes
       - name: CI passed — waiting for approval
@@ -64,9 +78,7 @@ jobs:
             });
 
   # -------------------------------------------------------------------
-  # Enable auto-merge once either (a) CI passed and approvals already
-  # exist, or (b) an approval just arrived. GitHub will then merge the PR
-  # automatically as soon as all required checks are green.
+  # Enable auto-merge after approval
   # -------------------------------------------------------------------
   enable-auto-merge:
     name: Enable auto-merge (when approved)
@@ -80,7 +92,6 @@ jobs:
         uses: actions/github-script@v7
         with:
           script: |
-            // Works only if repo setting "Allow auto-merge" is enabled
             const isPR = !!context.payload.pull_request;
             const pr = isPR ? context.payload.pull_request : context.payload.review?.pull_request;
             if (!pr) return;
@@ -88,11 +99,9 @@ jobs:
             const { owner, repo } = context.repo;
             const pull_number = pr.number;
 
-            // Count approvals
             const reviews = await github.rest.pulls.listReviews({ owner, repo, pull_number, per_page: 100 });
             const approvals = reviews.data.filter(r => r.state === "APPROVED");
             if (approvals.length < 1) {
-              // Not approved yet — leave/update a message
               await github.rest.issues.createComment({
                 owner, repo, issue_number: pull_number,
                 body: "🕒 Auto-merge pending: waiting for at least **one approval**."
@@ -100,7 +109,6 @@ jobs:
               return;
             }
 
-            // Enable auto-merge via GraphQL
             const mutation = `
               mutation($prId: ID!) {
                 enablePullRequestAutoMerge(input: { pullRequestId: $prId, mergeMethod: SQUASH }) {
@@ -117,8 +125,7 @@ jobs:
               core.warning(e.message);
               await github.rest.issues.createComment({
                 owner, repo, issue_number: pull_number,
-                body: "⚠️ I couldn't enable auto-merge (it may be disabled in repo settings or insufficient permissions). " +
-                      "Please click **Enable auto-merge** in the PR manually."
+                body: "⚠️ Could not enable auto-merge automatically. Please click **Enable auto-merge** in the PR manually."
               });
             }
 
@@ -138,8 +145,8 @@ jobs:
       - name: Sync DAGs to S3
         run: |
           BUCKET=${{ env.S3_BUCKET_DEV }}
-          echo "Deploying DAGs to s3://$BUCKET/dag1234/"
-          aws s3 sync dags/ingestion "s3://$BUCKET/dag1234/" \
+          echo "Deploying DAGs to s3://$BUCKET/dags1234/"
+          aws s3 sync dags/ingestion "s3://$BUCKET/dags1234/" \
             --exclude "*" --include "*.py" \
             --delete --only-show-errors
 
