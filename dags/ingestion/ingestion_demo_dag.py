@@ -20,4 +20,3 @@ with DAG(
         python_callable=_ingest,
         op_args=["{{ params.source }}"],
     )
-
