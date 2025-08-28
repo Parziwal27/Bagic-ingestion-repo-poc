@@ -86,31 +86,37 @@ jobs:
   enable-auto-merge:
     name: Enable auto-merge
     runs-on: [self-hosted, Linux, X64]
-    # Only run after CI passes for PR events, or directly for review events
     needs: [ci]
-    # This job should run when CI passes OR when a review is submitted
     if: |
       always() && 
       (needs.ci.result == 'success' || needs.ci.result == 'skipped') &&
-      (github.event_name == 'pull_request' || 
-       (github.event_name == 'pull_request_review' && github.event.review.state == 'approved'))
+      (github.event_name == 'pull_request' || github.event_name == 'pull_request_review')
     steps:
       - name: Check for approvals and enable auto-merge
         uses: actions/github-script@v7
         with:
           script: |
-            // Determine the PR based on event type
-            const isPR = github.event_name === 'pull_request';
-            const pr = isPR ? context.payload.pull_request : context.payload.review?.pull_request;
-            
+            let pr;
+            const { owner, repo } = context.repo;
+
+            if (context.payload.pull_request) {
+              pr = context.payload.pull_request;
+            } else if (github.event_name === 'pull_request_review') {
+              // fetch PR explicitly from review payload
+              const pull_number = context.payload.pull_request?.number || context.payload.review?.pull_request_number || context.payload.pull_request_number;
+              if (pull_number) {
+                const resp = await github.rest.pulls.get({ owner, repo, pull_number });
+                pr = resp.data;
+              }
+            }
+
             if (!pr) {
               console.log('No PR found in context');
               return;
             }
-            
-            const { owner, repo } = context.repo;
+
             const pull_number = pr.number;
-            
+
             // Fetch current reviews
             const reviews = await github.rest.pulls.listReviews({
               owner,
@@ -118,9 +124,9 @@ jobs:
               pull_number,
               per_page: 100
             });
-            
+
             const approvals = reviews.data.filter(r => r.state === "APPROVED");
-            
+
             if (approvals.length < 1) {
               await github.rest.issues.createComment({
                 owner,
@@ -130,7 +136,7 @@ jobs:
               });
               return;
             }
-            
+
             // Try to enable auto-merge
             const mutation = `
               mutation($prId: ID!) {
@@ -154,7 +160,6 @@ jobs:
             } catch (e) {
               console.log('Auto-merge error:', e.message);
               
-              // Only post comment if it's not already enabled
               if (!e.message.includes('already enabled')) {
                 await github.rest.issues.createComment({
                   owner,
