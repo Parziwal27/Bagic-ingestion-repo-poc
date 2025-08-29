@@ -5,7 +5,35 @@ on:
       - main
 permissions:
   contents: read
+concurrency:# .github/workflows/deploy.yml
+name: Deploy to Prod
+on:
+  workflow_run:
+    workflows: ["PR Merge on Approval"]
+    types: [completed]
+permissions:
+  contents: read
 concurrency:
+  group: deploy-from-pr-merge
+  cancel-in-progress: true
+jobs:
+  deploy:
+    if: github.event.workflow_run.conclusion == 'success'
+    runs-on: [self-hosted, Linux, X64]
+    steps:
+      - name: Checkout main branch
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.workflow_run.head_branch }}
+      - name: AWS identity check
+        run: aws sts get-caller-identity
+      - name: Sync DAGs to S3
+        env:
+          S3_BUCKET_DEV: ${{ secrets.S3_BUCKET_DEV }}
+        run: |
+          echo "Deploying DAGs to s3://$S3_BUCKET_DEV/dags1234/"
+          aws s3 sync dags/ingestion "s3://$S3_BUCKET_DEV/dags1234/" \
+            --exclude "*" --include "*.py" --delete --only-show-errors
   group: deploy-on-push-main
   cancel-in-progress: true
 jobs:
