@@ -1,5 +1,5 @@
 # .github/workflows/deploy.yml
-name: Deploy to Prod
+name: Deploy to UAT
 on:
   workflow_run:
     workflows: ["PR Merge on Approval"]
@@ -14,7 +14,7 @@ jobs:
     if: github.event.workflow_run.conclusion == 'success'
     runs-on: [self-hosted, Linux, X64]
     steps:
-      - name: Checkout main branch
+      - name: Checkout uat branch
         uses: actions/checkout@v4
         with:
           ref: ${{ github.event.workflow_run.head_branch }}
