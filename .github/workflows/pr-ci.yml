@@ -1,50 +1,165 @@
-name: PR Checks (auto-merge)
+name: PR Quality Gate + Merge on Approval
 
 on:
+  # Run the quality job on the PR contents
   pull_request:
-    branches: [ main ]
     types: [opened, synchronize, reopened, ready_for_review]
+  # Use write-permission context to merge safely (no checkout of PR code here)
   pull_request_target:
-    branches: [ main ]
     types: [opened, synchronize, reopened, ready_for_review]
+  # Merge immediately after approval (will wait for checks to pass)
+  pull_request_review:
+    types: [submitted]
 
-# keep runs for PR and PRT separate
+# default minimal perms; jobs will elevate as needed
+permissions:
+  contents: read
+  pull-requests: read
+  checks: read
+
 concurrency:
-  group: ${{ github.workflow }}-${{ github.event_name }}-pr-${{ github.event.pull_request.number }}
+  group: pr-quality-merge-${{ github.event.pull_request.number || github.run_id }}
   cancel-in-progress: true
 
+env:
+  # Comma-separated allow-list of base branches that may be auto-merged.
+  # Change this as you like, e.g. "main,develop,release/*" (wildcards not supported here)
+  ALLOWED_BASES: main
+  # One of: SQUASH | MERGE | REBASE
+  MERGE_METHOD: SQUASH
+  # The job/check name we require to be green before merging (see "Ruleset" notes below)
+  REQUIRED_CHECK: qa-pylint
+  # How long (minutes) to wait after approval for REQUIRED_CHECK to turn green
+  WAIT_FOR_CHECK_MINUTES: "20"
+
 jobs:
-  validate:
+  # ---------- Quality Gate ----------
+  qa-pylint:
+    # Exact job name is important for required status checks
+    name: qa-pylint
     if: github.event_name == 'pull_request'
     runs-on: [self-hosted, Linux, X64]
     permissions: { contents: read, pull-requests: read }
-    # ... your existing steps ...
 
-  enable_auto_merge:
-    if: github.event_name == 'pull_request_target' && github.event.pull_request.state == 'open' && github.event.pull_request.draft == false
-    runs-on: [self-hosted, Linux, X64]
-    permissions: { contents: write, pull-requests: write }
     steps:
-      - uses: actions/github-script@v7
+      - name: Check out PR code
+        uses: actions/checkout@v4
+
+      # Use the system Python on your runner, or uncomment setup-python if needed:
+      # - uses: actions/setup-python@v5
+      #   with: { python-version: '3.11' }
+
+      - name: Install pylint
+        run: |
+          python3 -m pip install --upgrade pip
+          python3 -m pip install pylint
+
+      - name: Run pylint (fail only on errors/fatals)
+        shell: bash
+        run: |
+          set -euo pipefail
+          PY_FILES=$(git ls-files '*.py' | tr '\n' ' ')
+          if [ -z "$PY_FILES" ]; then
+            echo "No Python files found — passing."
+            exit 0
+          fi
+          # disable Convention, Refactor, Warning so we fail on real issues first
+          python3 -m pylint --disable=C,R,W $PY_FILES
+
+  # ---------- Merge on approval (explicit) ----------
+  merge-when-approved:
+    # Only run when we have an approval event, or when PR target-context events occur.
+    # The script below will *only* merge when conditions are truly satisfied.
+    if: >
+      (github.event_name == 'pull_request_review' && github.event.review.state == 'approved')
+      || (github.event_name == 'pull_request_target')
+    runs-on: [self-hosted, Linux, X64]
+    # Do NOT checkout code here. We only call the API with a write token.
+    permissions:
+      contents: write
+      pull-requests: write
+      checks: read
+
+    steps:
+      - name: Merge after approval & green checks
+        uses: actions/github-script@v7
         with:
+          github-token: ${{ secrets.GITHUB_TOKEN }}
           script: |
+            const core = require('@actions/core');
+            const { context, github } = require('@actions/github');
+
+            // Pull Request payload (present on both pull_request_target and pull_request_review)
             const pr = context.payload.pull_request;
-            if (!pr) return;
-            // pick an allowed method (prefer SQUASH)
-            const repo = await github.graphql(`
-              query($o:String!,$n:String!){repository(owner:$o,name:$n){
-                autoMergeAllowed squashMergeAllowed mergeCommitAllowed rebaseMergeAllowed
-              }}`, { o: context.repo.owner, n: context.repo.repo });
-            if (!repo.repository.autoMergeAllowed) {
-              core.warning('Enable "Allow auto-merge" in repository settings.');
+            if (!pr) { core.info('No pull_request in payload. Exiting.'); return; }
+
+            // Respect allow-list of base branches
+            const allowed = (process.env.ALLOWED_BASES || 'main')
+              .split(',').map(s => s.trim()).filter(Boolean);
+            if (allowed.length && !allowed.includes(pr.base.ref)) {
+              core.info(`Base branch '${pr.base.ref}' not in allow-list: ${allowed.join(', ')}. Skipping.`);
               return;
             }
-            let method = repo.repository.squashMergeAllowed ? 'SQUASH'
-              : repo.repository.mergeCommitAllowed ? 'MERGE'
-              : repo.repository.rebaseMergeAllowed ? 'REBASE' : null;
-            if (!method) { core.warning('No merge methods enabled.'); return; }
-            await github.graphql(`
-              mutation($id:ID!,$m:PullRequestMergeMethod!){
-                enablePullRequestAutoMerge(input:{pullRequestId:$id, mergeMethod:$m}){clientMutationId}
-              }`, { id: pr.node_id, m: method });
-            core.notice(`Auto-merge enabled with ${method}.`);
+
+            if (pr.draft) { core.info('PR is draft. Skipping.'); return; }
+
+            const { owner, repo } = context.repo;
+            const requiredCheck = process.env.REQUIRED_CHECK || 'qa-pylint';
+            const method = (process.env.MERGE_METHOD || 'SQUASH').toLowerCase();
+            const waitMinutes = parseInt(process.env.WAIT_FOR_CHECK_MINUTES || '20', 10);
+            const intervalSec = 15;
+
+            // Use GraphQL to read the review decision (APPROVED / CHANGES_REQUESTED / REVIEW_REQUIRED)
+            const q = await github.graphql(`
+              query($o:String!, $n:String!, $num:Int!){
+                repository(owner:$o, name:$n){
+                  pullRequest(number:$num){
+                    id number baseRefName headRefOid reviewDecision
+                  }
+                }
+              }`,
+              { o: owner, n: repo, num: pr.number }
+            );
+            const prNode = q.repository?.pullRequest;
+            const decision = prNode?.reviewDecision || 'UNKNOWN';
+            if (decision !== 'APPROVED') {
+              core.info(`reviewDecision = ${decision}. Not merging yet.`);
+              return;
+            }
+
+            // Wait for REQUIRED_CHECK to be green on the current head SHA
+            const deadline = Date.now() + (waitMinutes * 60 * 1000);
+            let checkOK = false;
+            let lastStatus = 'not-found';
+            while (Date.now() < deadline) {
+              const { data } = await github.rest.checks.listForRef({
+                owner, repo, ref: pr.head.sha, per_page: 100
+              });
+              const chk = data.check_runs.find(cr => cr.name === requiredCheck);
+              if (chk) {
+                lastStatus = `${chk.status}/${chk.conclusion || 'none'}`;
+                if (chk.status === 'completed') {
+                  if (chk.conclusion === 'success') { checkOK = true; break; }
+                  else {
+                    core.setFailed(`Required check '${requiredCheck}' concluded as: ${chk.conclusion}`);
+                    return;
+                  }
+                }
+              }
+              await new Promise(r => setTimeout(r, intervalSec * 1000));
+            }
+            if (!checkOK) {
+              core.setFailed(`Timed out waiting for required check '${requiredCheck}' to succeed (last status: ${lastStatus}).`);
+              return;
+            }
+
+            // Try to merge
+            try {
+              const res = await github.rest.pulls.merge({
+                owner, repo, pull_number: pr.number, merge_method: method
+              });
+              core.notice(`Merged PR #${pr.number} into '${pr.base.ref}' with ${method}. SHA: ${res.data.sha}`);
+            } catch (e) {
+              core.setFailed(`Merge failed: ${e.message}`);
+            }
+
