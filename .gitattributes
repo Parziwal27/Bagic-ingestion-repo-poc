@@ -1,0 +1,3 @@
+# Always take the target branch's version of workflows during merge
+.github/workflows/* merge=ours
+
