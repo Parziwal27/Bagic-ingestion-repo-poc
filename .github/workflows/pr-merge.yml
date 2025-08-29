@@ -17,8 +17,8 @@ concurrency:
   cancel-in-progress: true
 
 env:
-  # allow-list of base branches (edit as needed; not hard-coded to main)
-  ALLOWED_BASES: main
+  # allow-list of base branches (edit as needed; not hard-coded to prod)
+  ALLOWED_BASES: prod
   # merge method: squash | merge | rebase
   MERGE_METHOD: squash
   # the required check name to wait for (job name from the other workflow)
