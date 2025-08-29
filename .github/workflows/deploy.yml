@@ -1,35 +1,64 @@
+# .github/workflows/deploy.yml
 name: Deploy to Prod
 
 on:
-  push:
-    branches: [ main ]
+  workflow_run:
+    workflows: ["PR Merge on Approval"]
+    types: [completed]
 
 permissions:
   contents: read
 
 env:
-  AWS_REGION: ap-south-1
-  S3_BUCKET_DEV: ${{ secrets.S3_BUCKET_DEV }}
+  ALLOWED_BASES: main,develop,release/*   # <— customize
 
 concurrency:
-  group: deploy-main
+  group: deploy-from-pr-merge
   cancel-in-progress: true
 
 jobs:
   deploy:
-    name: Deploy
+    if: github.event.workflow_run.conclusion == 'success'
     runs-on: [self-hosted, Linux, X64]
-    steps:
-      - uses: actions/checkout@v4
 
-      - name: AWS identity check
+    steps:
+      - name: Gate by base branch + merged
+        id: gate
+        uses: actions/github-script@v7
+        with:
+          script: |
+            const pr = (context.payload.workflow_run.pull_requests || [])[0];
+            if (!pr) { core.setOutput('go','no'); return; }
+
+            const base = pr.base.ref;        // e.g. main / develop / release/1.2
+            const merged = pr.merged === true;
+
+            const patterns = (process.env.ALLOWED_BASES || '')
+              .split(',').map(s => s.trim()).filter(Boolean);
+
+            // simple glob: support '*' at the end (prefix match) or exact match
+            const match = patterns.some(p =>
+              p.endsWith('*') ? base.startsWith(p.slice(0, -1)) : base === p
+            );
+
+            core.info(`PR #${pr.number} base=${base} merged=${merged} match=${match}`);
+            core.setOutput('go', merged && match ? 'yes' : 'no');
+
+      - if: steps.gate.outputs.go == 'yes'
+        uses: actions/checkout@v4
+        with:
+          # checkout the PR's base branch we just merged into
+          ref: ${{ github.event.workflow_run.pull_requests[0].base.ref }}
+
+      - if: steps.gate.outputs.go == 'yes'
+        name: AWS identity check
         run: aws sts get-caller-identity
 
-      - name: Sync DAGs to S3
+      - if: steps.gate.outputs.go == 'yes'
+        name: Sync DAGs to S3
+        env:
+          S3_BUCKET_DEV: ${{ secrets.S3_BUCKET_DEV }}
         run: |
-          BUCKET=${{ env.S3_BUCKET_DEV }}
-          echo "Deploying DAGs to s3://$BUCKET/dags1234/"
-          aws s3 sync dags/ingestion "s3://$BUCKET/dags1234/" \
-            --exclude "*" --include "*.py" \
-            --delete --only-show-errors
-
+          echo "Deploying DAGs to s3://$S3_BUCKET_DEV/dags1234/"
+          aws s3 sync dags/ingestion "s3://$S3_BUCKET_DEV/dags1234/" \
+            --exclude "*" --include "*.py" --delete --only-show-errors
