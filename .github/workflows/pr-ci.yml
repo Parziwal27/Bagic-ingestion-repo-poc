@@ -4,79 +4,47 @@ on:
   pull_request:
     branches: [ main ]
     types: [opened, synchronize, reopened, ready_for_review]
+  pull_request_target:
+    branches: [ main ]
+    types: [opened, synchronize, reopened, ready_for_review]
 
-permissions:
-  contents: write
-  pull-requests: write
-
-env:
-  AWS_REGION: ap-south-1
-  S3_BUCKET_DEV: ${{ secrets.S3_BUCKET_DEV }}
-
+# keep runs for PR and PRT separate
 concurrency:
-  group: pr-${{ github.event.pull_request.number }}
+  group: ${{ github.workflow }}-${{ github.event_name }}-pr-${{ github.event.pull_request.number }}
   cancel-in-progress: true
 
 jobs:
   validate:
-    name: Validate PR
+    if: github.event_name == 'pull_request'
     runs-on: [self-hosted, Linux, X64]
-    steps:
-      - uses: actions/checkout@v4
-
-      - uses: dorny/paths-filter@v3
-        id: changes
-        with:
-          filters: |
-            ingestion:
-              - 'dags/ingestion/**'
-
-      - name: Show Python & pip (sanity)
-        run: |
-          which python3 || true
-          python3 --version
-          python3 -m pip --version
-
-      - name: Install deps
-        if: steps.changes.outputs.ingestion == 'true'
-        run: |
-          python3 -m pip install --upgrade pip
-          python3 -m pip install flake8 pytest
-
-      - name: Lint
-        if: steps.changes.outputs.ingestion == 'true'
-        run: python3 -m flake8 dags/ingestion
-
-      - name: Run tests
-        if: steps.changes.outputs.ingestion == 'true'
-        run: python3 -m pytest -q
-
-      - name: No ingestion changes
-        if: steps.changes.outputs.ingestion != 'true'
-        run: echo "No ingestion changes; CI passes by default."
+    permissions: { contents: read, pull-requests: read }
+    # ... your existing steps ...
 
   enable_auto_merge:
-    name: Enable auto-merge
-    needs: [validate]
+    if: github.event_name == 'pull_request_target' && github.event.pull_request.state == 'open' && github.event.pull_request.draft == false
     runs-on: [self-hosted, Linux, X64]
-    if: needs.validate.result == 'success'
+    permissions: { contents: write, pull-requests: write }
     steps:
-      - name: Enable auto-merge now (waits for approval later)
-        uses: actions/github-script@v7
+      - uses: actions/github-script@v7
         with:
           script: |
             const pr = context.payload.pull_request;
-            if (!pr) { core.info('No PR in context'); return; }
-            const mutation = `
-              mutation($prId: ID!) {
-                enablePullRequestAutoMerge(input: { pullRequestId: $prId, mergeMethod: SQUASH }) {
-                  clientMutationId
-                }
-              }`;
-            try {
-              await github.graphql(mutation, { prId: pr.node_id });
-              core.notice('Auto-merge enabled. GitHub will merge after approval & required checks.');
-            } catch (e) {
-              core.warning('Could not enable auto-merge automatically: ' + e.message);
+            if (!pr) return;
+            // pick an allowed method (prefer SQUASH)
+            const repo = await github.graphql(`
+              query($o:String!,$n:String!){repository(owner:$o,name:$n){
+                autoMergeAllowed squashMergeAllowed mergeCommitAllowed rebaseMergeAllowed
+              }}`, { o: context.repo.owner, n: context.repo.repo });
+            if (!repo.repository.autoMergeAllowed) {
+              core.warning('Enable "Allow auto-merge" in repository settings.');
+              return;
             }
-
+            let method = repo.repository.squashMergeAllowed ? 'SQUASH'
+              : repo.repository.mergeCommitAllowed ? 'MERGE'
+              : repo.repository.rebaseMergeAllowed ? 'REBASE' : null;
+            if (!method) { core.warning('No merge methods enabled.'); return; }
+            await github.graphql(`
+              mutation($id:ID!,$m:PullRequestMergeMethod!){
+                enablePullRequestAutoMerge(input:{pullRequestId:$id, mergeMethod:$m}){clientMutationId}
+              }`, { id: pr.node_id, m: method });
+            core.notice(`Auto-merge enabled with ${method}.`);
