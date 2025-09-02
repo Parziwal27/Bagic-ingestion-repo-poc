@@ -1,23 +1,22 @@
-# .github/workflows/deploy.yml
-name: Deploy to Prod
+# .github/workflows/deploy-on-push.yml
+name: Deploy to Prod on Push
 on:
-  workflow_run:
-    workflows: ["PR Merge on Approval"]
-    types: [completed]
+  push:
+    branches:
+      - main
 permissions:
   contents: read
 concurrency:
-  group: deploy-from-pr-merge
+  group: deploy-on-push-main
   cancel-in-progress: true
 jobs:
   deploy:
-    if: github.event.workflow_run.conclusion == 'success'
     runs-on: [self-hosted, Linux, X64]
     steps:
-      - name: Checkout main branch
+      - name: Checkout code
         uses: actions/checkout@v4
         with:
-          ref: ${{ github.event.workflow_run.head_branch }}
+          ref: main
       - name: AWS identity check
         run: aws sts get-caller-identity
       - name: Sync DAGs to S3
