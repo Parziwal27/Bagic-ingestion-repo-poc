@@ -1,0 +1,29 @@
+# .github/workflows/deploy-on-push.yml
+name: Deploy to Prod on Push
+on:
+  push:
+    branches:
+      - uat
+permissions:
+  contents: read
+concurrency:
+  group: deploy-on-push-uat
+  cancel-in-progress: true
+jobs:
+  deploy:
+    runs-on: [self-hosted, Linux, X64]
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+        with:
+          ref: uat
+      - name: AWS identity check
+        run: aws sts get-caller-identity
+      - name: Sync DAGs to S3
+        env:
+          S3_BUCKET_UAT: ${{ secrets.S3_BUCKET_UAT }}
+        run: |
+          echo "Deploying DAGs to s3://$S3_BUCKET_UAT/dags1234/"
+          aws s3 sync dags/ingestion "s3://$S3_BUCKET_UAT/dags1234/" \
+            --exclude "*" --include "*.py" --delete --only-show-errors
+

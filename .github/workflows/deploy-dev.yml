@@ -3,11 +3,11 @@ name: Deploy to Prod on Push
 on:
   push:
     branches:
-      - main
+      - develop
 permissions:
   contents: read
 concurrency:
-  group: deploy-on-push-main
+  group: deploy-on-push-develop
   cancel-in-progress: true
 jobs:
   deploy:
@@ -16,7 +16,7 @@ jobs:
       - name: Checkout code
         uses: actions/checkout@v4
         with:
-          ref: main
+          ref: develop
       - name: AWS identity check
         run: aws sts get-caller-identity
       - name: Sync DAGs to S3
@@ -26,3 +26,4 @@ jobs:
           echo "Deploying DAGs to s3://$S3_BUCKET_DEV/dags1234/"
           aws s3 sync dags/ingestion "s3://$S3_BUCKET_DEV/dags1234/" \
             --exclude "*" --include "*.py" --delete --only-show-errors
+
