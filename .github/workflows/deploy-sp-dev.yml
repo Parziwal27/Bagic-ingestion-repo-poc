@@ -40,7 +40,7 @@ jobs:
           echo "SNOWFLAKE_DATABASE=${{ secrets.SNOWFLAKE_DATABASE_DEV }}" >> $GITHUB_ENV  # e.g., DEV_DB
           echo "SNOWFLAKE_SCHEMA=${{ secrets.SNOWFLAKE_SCHEMA_DEV }}" >> $GITHUB_ENV      # e.g., APP
 
-      - name: Compute changed SQL files
+      - name: List changed SQL files (range or single commit)
         id: diff
         shell: bash
         run: |
@@ -48,14 +48,19 @@ jobs:
 
           if [[ -n "${{ github.event.before }}" && "${{ github.event.before }}" != "0000000000000000000000000000000000000000" ]]; then
             range="${{ github.event.before }}..${{ github.sha }}"
+            pathspec=":(glob)${SQL_ROOT%/}/**/*.sql"
+            CHANGED=$(git diff --name-only --diff-filter=ACMR "$range" -- "$pathspec")
           else
-            # Fallback for first push on branch
-            range="$(git rev-list --max-parents=0 HEAD)..HEAD"
+            # First push on branch or no 'before' SHA: check this commit only
+            pathspec=":(glob)${SQL_ROOT%/}/**/*.sql"
+            CHANGED=$(git diff-tree --no-commit-id --name-only -r "${GITHUB_SHA}" -- "$pathspec")
           fi
 
-          CHANGED=$(git diff --name-only --diff-filter=AM ${range} -- "${SQL_ROOT}/**/*.sql" | tr '\n' ' ')
+          printf "%s\n" "$CHANGED" > changed_files.txt
+          CHANGED="${CHANGED//$'\n'/ }"
           echo "changed=${CHANGED}" >> "$GITHUB_OUTPUT"
-          echo "Changed SQL: ${CHANGED:-<none>}"
+          echo "Changed SQL:"
+          cat changed_files.txt || true
 
       - name: Build deploy.sql (FETCH + per-file executes)
         if: ${{ steps.diff.outputs.changed != '' }}
@@ -108,3 +113,4 @@ jobs:
         with:
           name: dev-deploy-sql
           path: deploy.sql
+
