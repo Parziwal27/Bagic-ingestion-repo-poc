@@ -1,5 +1,5 @@
 # .github/workflows/deploy-on-push.yml
-name: Deploy to Prod on Push
+name: Deploy to UAT on Push
 on:
   push:
     branches:
