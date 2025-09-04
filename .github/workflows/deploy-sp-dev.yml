@@ -27,8 +27,9 @@ jobs:
       - name: Install jq + Snowflake CLI
         run: |
           sudo apt-get update && sudo apt-get install -y jq python3-pip
-          python3 -m pip install --user --upgrade snowflake-cli-labs
+          python3 -m pip install --user --upgrade "snowflake-cli-labs>=2.0.0"
           echo "$HOME/.local/bin" >> $GITHUB_PATH
+          snow --version
 
       - name: Export Snowflake creds from GitHub Secrets (DEV)
         run: |
@@ -75,11 +76,10 @@ jobs:
           echo "USE DATABASE ${SNOWFLAKE_DATABASE};" >> deploy.sql
           echo "USE SCHEMA ${SNOWFLAKE_SCHEMA};" >> deploy.sql
 
-          # Always refresh the Snowflake Git repo clone
+          # Refresh the Snowflake Git repo clone
           echo "ALTER GIT REPOSITORY ${SNOWFLAKE_GIT_REPO} FETCH;" >> deploy.sql
 
           for f in ${{ steps.diff.outputs.changed }}; do
-            # Strip the leading SQL_ROOT/ when building the @repo path
             rel="${f#${SQL_ROOT}/}"
             echo "EXECUTE IMMEDIATE FROM @${SNOWFLAKE_GIT_REPO}/branches/${SNOWFLAKE_GIT_BRANCH}/${rel};" >> deploy.sql
           done
@@ -91,21 +91,29 @@ jobs:
         if: ${{ steps.diff.outputs.changed == '' }}
         run: echo "No SQL changes under ${SQL_ROOT}; nothing to deploy."
 
-      - name: Execute deployment in Snowflake
+      - name: Execute deployment in Snowflake (fail-fast)
         if: ${{ steps.diff.outputs.changed != '' }}
         env:
           SNOWFLAKE_AUTHENTICATOR: snowflake
         run: |
           set -euo pipefail
-          snow sql -q "SELECT CURRENT_USER(), CURRENT_ROLE(), CURRENT_DATABASE(), CURRENT_SCHEMA();" \
-            --account "$SNOWFLAKE_ACCOUNT" --user "$SNOWFLAKE_USERNAME" --password "$SNOWFLAKE_PASSWORD" \
+          # 1) who/where
+          printf '%s' "$SNOWFLAKE_PASSWORD" | snow --non-interactive sql \
+            -q "SELECT CURRENT_USER(), CURRENT_ROLE(), CURRENT_DATABASE(), CURRENT_SCHEMA();" \
+            --temporary-connection \
+            --account "$SNOWFLAKE_ACCOUNT" --user "$SNOWFLAKE_USERNAME" \
             --role "$SNOWFLAKE_ROLE" --warehouse "$SNOWFLAKE_WAREHOUSE" \
-            --database "$SNOWFLAKE_DATABASE" --schema "$SNOWFLAKE_SCHEMA"
+            --database "$SNOWFLAKE_DATABASE" --schema "$SNOWFLAKE_SCHEMA" \
+            --password-stdin
 
-          snow sql -f deploy.sql \
-            --account "$SNOWFLAKE_ACCOUNT" --user "$SNOWFLAKE_USERNAME" --password "$SNOWFLAKE_PASSWORD" \
+          # 2) execute the batch
+          printf '%s' "$SNOWFLAKE_PASSWORD" | snow --non-interactive sql \
+            -f deploy.sql \
+            --temporary-connection \
+            --account "$SNOWFLAKE_ACCOUNT" --user "$SNOWFLAKE_USERNAME" \
             --role "$SNOWFLAKE_ROLE" --warehouse "$SNOWFLAKE_WAREHOUSE" \
-            --database "$SNOWFLAKE_DATABASE" --schema "$SNOWFLAKE_SCHEMA"
+            --database "$SNOWFLAKE_DATABASE" --schema "$SNOWFLAKE_SCHEMA" \
+            --password-stdin
 
       - name: Upload deploy.sql artifact
         if: ${{ steps.diff.outputs.changed != '' }}
