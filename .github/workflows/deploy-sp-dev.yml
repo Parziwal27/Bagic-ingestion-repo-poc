@@ -95,6 +95,7 @@ jobs:
         if: ${{ steps.diff.outputs.changed != '' }}
         env:
           SNOWFLAKE_AUTHENTICATOR: snowflake
+          SNS_TOPIC_ARN: arn:aws:sns:ap-south-1:660061364911:datahub-notifications-sns-topic
         run: |
           set -euo pipefail
 
@@ -116,10 +117,86 @@ jobs:
           --authenticator "$SNOWFLAKE_AUTHENTICATOR" \
           --password "$SNOWFLAKE_PASSWORD"
 
+          successes=()
+          failures=()
+          : > snow_exec_detail.log
+      
+          # 2) Run each changed SQL file individually
+          while IFS= read -r f; do
+            [[ -z "$f" ]] && continue
+            rel="${f#./}"  # keep SQL_DIR/ in place; only strip leading ./ if any
+            stage_path="@${SNOWFLAKE_GIT_REPO}/branches/${SNOWFLAKE_GIT_BRANCH}/${rel}"
+      
+            echo "---- Executing: ${stage_path}" | tee -a snow_exec_detail.log
+            if out=$(snow sql \
+                -q "EXECUTE IMMEDIATE FROM ${stage_path};" \
+                --temporary-connection \
+                --account "$SNOWFLAKE_ACCOUNT" --user "$SNOWFLAKE_USERNAME" \
+                --role "$SNOWFLAKE_ROLE" --warehouse "$SNOWFLAKE_WAREHOUSE" \
+                --database "$SNOWFLAKE_DATABASE" --schema "$SNOWFLAKE_SCHEMA" \
+                --authenticator "$SNOWFLAKE_AUTHENTICATOR" 2>&1); then
+              successes+=("$rel")
+              echo "$out" >> snow_exec_detail.log
+            else
+              failures+=("$rel")
+              # capture first error line for summary
+              err_first_line="$(printf '%s\n' "$out" | head -n 1)"
+              echo "ERROR for ${rel}: ${err_first_line}" | tee -a snow_exec_detail.log
+            fi
+            echo >> snow_exec_detail.log
+          done < changed_files.txt
+      
+          # 3) Compose SNS message
+          ok_count=${#successes[@]}
+          fail_count=${#failures[@]}
+          subject="Snowflake deploy (${ENV}) ✔ ${ok_count} ok / ✖ ${fail_count} failed"
+      
+          {
+            echo "Environment: ${ENV}"
+            echo "Database.Schema: ${SNOWFLAKE_DATABASE}.${SNOWFLAKE_SCHEMA}"
+            echo "Warehouse: ${SNOWFLAKE_WAREHOUSE}"
+            echo
+            echo "✅ SUCCEEDED (${ok_count}):"
+            if (( ok_count > 0 )); then
+              printf ' - %s\n' "${successes[@]}"
+            else
+              echo " - (none)"
+            fi
+            echo
+            echo "❌ FAILED (${fail_count}):"
+            if (( fail_count > 0 )); then
+              printf ' - %s\n' "${failures[@]}"
+            else
+              echo " - (none)"
+            fi
+            echo
+            echo "Detail log attached below."
+            echo
+            echo "===== DETAIL ====="
+            cat snow_exec_detail.log
+          } > sns_message.txt
+      
+          # 4) Publish to SNS
+          aws sns publish \
+            --topic-arn "$SNS_TOPIC_ARN" \
+            --subject "$subject" \
+            --message file://sns_message.txt
+      
+          # Also upload the detailed log as an artifact for debugging
+          echo "Uploading execution detail log..."
+          :
+
       - name: Upload deploy.sql artifact
         if: ${{ steps.diff.outputs.changed != '' }}
         uses: actions/upload-artifact@v4
         with:
           name: dev-deploy-sql
           path: deploy.sql
+      - name: Upload execution detail log
+        if: ${{ steps.diff.outputs.changed != '' }}
+        uses: actions/upload-artifact@v4
+        with:
+          name: snowflake-exec-detail
+          path: snow_exec_detail.log
+
 
