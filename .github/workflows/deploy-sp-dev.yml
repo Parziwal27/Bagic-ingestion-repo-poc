@@ -97,7 +97,7 @@ jobs:
           SNOWFLAKE_AUTHENTICATOR: snowflake
           SNS_TOPIC_ARN: arn:aws:sns:ap-south-1:660061364911:datahub-notifications-sns-topic
         run: |
-          set -euo pipefail
+          set -uo pipefail
 
           snow sql \
           -q "SELECT CURRENT_USER(), CURRENT_ROLE(), CURRENT_DATABASE(), CURRENT_SCHEMA();" \
