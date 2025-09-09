@@ -1,0 +1,202 @@
+name: Snowflake Deploy (uat - changed SQL only)
+
+on:
+  push:
+    branches: [ uat ]
+    paths:
+      - "SQL_DIR/**/*.sql"
+      - ".github/workflows/uat-snowflake-deploy.yml"
+
+env:
+  ENV: uat
+  SNOWFLAKE_GIT_REPO: git_repo_uat
+  SNOWFLAKE_GIT_BRANCH: uat
+  SQL_ROOT: SQL_DIR
+
+jobs:
+  deploy:
+    runs-on: [self-hosted, Linux, X64]   # change to ubuntu-latest if you prefer
+    permissions:
+      contents: read
+
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Install jq + Snowflake CLI
+        run: |
+          sudo apt-get update && sudo apt-get install -y jq python3-pip
+          python3 -m pip install --user --upgrade "snowflake-cli-labs>=2.0.0"
+          echo "$HOME/.local/bin" >> $GITHUB_PATH
+          snow --version
+
+      - name: Export Snowflake creds from GitHub Secrets (UAT)
+        run: |
+          echo "SNOWFLAKE_ACCOUNT=${{ secrets.SNOWFLAKE_ACCOUNT_UAT }}" >> $GITHUB_ENV
+          echo "SNOWFLAKE_USERNAME=${{ secrets.SNOWFLAKE_USERNAME_UAT }}" >> $GITHUB_ENV
+          echo "SNOWFLAKE_PASSWORD=${{ secrets.SNOWFLAKE_PASSWORD_UAT }}" >> $GITHUB_ENV
+          echo "SNOWFLAKE_ROLE=${{ secrets.SNOWFLAKE_ROLE_UAT }}" >> $GITHUB_ENV
+          echo "SNOWFLAKE_WAREHOUSE=${{ secrets.SNOWFLAKE_WAREHOUSE_UAT }}" >> $GITHUB_ENV
+          echo "SNOWFLAKE_DATABASE=${{ secrets.SNOWFLAKE_DATABASE_UAT }}" >> $GITHUB_ENV  # e.g., DEV_DB
+          echo "SNOWFLAKE_SCHEMA=${{ secrets.SNOWFLAKE_SCHEMA_UAT }}" >> $GITHUB_ENV      # e.g., APP
+
+      - name: List changed SQL files (range or single commit)
+        id: diff
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          if [[ -n "${{ github.event.before }}" && "${{ github.event.before }}" != "0000000000000000000000000000000000000000" ]]; then
+            range="${{ github.event.before }}..${{ github.sha }}"
+            pathspec=":(glob)${SQL_ROOT%/}/**/*.sql"
+            CHANGED=$(git diff --name-only --diff-filter=ACMR "$range" -- "$pathspec")
+          else
+            # First push on branch or no 'before' SHA: check this commit only
+            pathspec=":(glob)${SQL_ROOT%/}/**/*.sql"
+            CHANGED=$(git diff-tree --no-commit-id --name-only -r "${GITHUB_SHA}" -- "$pathspec")
+          fi
+
+          printf "%s\n" "$CHANGED" > changed_files.txt
+          CHANGED="${CHANGED//$'\n'/ }"
+          echo "changed=${CHANGED}" >> "$GITHUB_OUTPUT"
+          echo "Changed SQL:"
+          cat changed_files.txt || true
+
+      - name: Build deploy.sql (FETCH + per-file executes)
+        if: ${{ steps.diff.outputs.changed != '' }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          : > deploy.sql
+
+          echo "-- env: ${ENV}" >> deploy.sql
+          echo "USE ROLE ${SNOWFLAKE_ROLE};" >> deploy.sql
+          echo "USE WAREHOUSE ${SNOWFLAKE_WAREHOUSE};" >> deploy.sql
+          echo "USE DATABASE ${SNOWFLAKE_DATABASE};" >> deploy.sql
+          echo "USE SCHEMA ${SNOWFLAKE_SCHEMA};" >> deploy.sql
+
+          # Refresh the Snowflake Git repo clone
+          echo "ALTER GIT REPOSITORY ${SNOWFLAKE_GIT_REPO} FETCH;" >> deploy.sql
+
+          for f in ${{ steps.diff.outputs.changed }}; do
+            rel="$f"
+            echo "EXECUTE IMMEDIATE FROM @${SNOWFLAKE_GIT_REPO}/branches/${SNOWFLAKE_GIT_BRANCH}/${rel};" >> deploy.sql
+          done
+
+          echo "----- deploy.sql -----"
+          sed -n '1,200p' deploy.sql
+
+      - name: Exit early (no changed SQL)
+        if: ${{ steps.diff.outputs.changed == '' }}
+        run: echo "No SQL changes under ${SQL_ROOT}; nothing to deploy."
+
+      - name: Execute deployment in Snowflake (fail-fast)
+        if: ${{ steps.diff.outputs.changed != '' }}
+        env:
+          SNOWFLAKE_AUTHENTICATOR: snowflake
+          SNS_TOPIC_ARN: arn:aws:sns:ap-south-1:660061364911:datahub-notifications-sns-topic
+        run: |
+          set -euo pipefail
+
+          snow sql \
+          -q "SELECT CURRENT_USER(), CURRENT_ROLE(), CURRENT_DATABASE(), CURRENT_SCHEMA();" \
+          --temporary-connection \
+          --account "$SNOWFLAKE_ACCOUNT" --user "$SNOWFLAKE_USERNAME" \
+          --role "$SNOWFLAKE_ROLE" --warehouse "$SNOWFLAKE_WAREHOUSE" \
+          --database "$SNOWFLAKE_DATABASE" --schema "$SNOWFLAKE_SCHEMA" \
+          --authenticator "$SNOWFLAKE_AUTHENTICATOR" \
+          --password "$SNOWFLAKE_PASSWORD"
+
+          snow sql \
+          -f deploy.sql \
+          --temporary-connection \
+          --account "$SNOWFLAKE_ACCOUNT" --user "$SNOWFLAKE_USERNAME" \
+          --role "$SNOWFLAKE_ROLE" --warehouse "$SNOWFLAKE_WAREHOUSE" \
+          --database "$SNOWFLAKE_DATABASE" --schema "$SNOWFLAKE_SCHEMA" \
+          --authenticator "$SNOWFLAKE_AUTHENTICATOR" \
+          --password "$SNOWFLAKE_PASSWORD"
+
+          successes=()
+          failures=()
+          : > snow_exec_detail.log
+      
+          # 2) Run each changed SQL file individually
+          while IFS= read -r f; do
+            [[ -z "$f" ]] && continue
+            rel="${f#./}"  # keep SQL_DIR/ in place; only strip leading ./ if any
+            stage_path="@${SNOWFLAKE_GIT_REPO}/branches/${SNOWFLAKE_GIT_BRANCH}/${rel}"
+      
+            echo "---- Executing: ${stage_path}" | tee -a snow_exec_detail.log
+            if out=$(snow sql \
+                -q "EXECUTE IMMEDIATE FROM ${stage_path};" \
+                --temporary-connection \
+                --account "$SNOWFLAKE_ACCOUNT" --user "$SNOWFLAKE_USERNAME" \
+                --role "$SNOWFLAKE_ROLE" --warehouse "$SNOWFLAKE_WAREHOUSE" \
+                --database "$SNOWFLAKE_DATABASE" --schema "$SNOWFLAKE_SCHEMA" \
+                --authenticator "$SNOWFLAKE_AUTHENTICATOR" 2>&1); then
+              successes+=("$rel")
+              echo "$out" >> snow_exec_detail.log
+            else
+              failures+=("$rel")
+              # capture first error line for summary
+              err_first_line="$(printf '%s\n' "$out" | head -n 1)"
+              echo "ERROR for ${rel}: ${err_first_line}" | tee -a snow_exec_detail.log
+            fi
+            echo >> snow_exec_detail.log
+          done < changed_files.txt
+      
+          # 3) Compose SNS message
+          ok_count=${#successes[@]}
+          fail_count=${#failures[@]}
+          subject="Snowflake deploy (${ENV}) ✔ ${ok_count} ok / ✖ ${fail_count} failed"
+      
+          {
+            echo "Environment: ${ENV}"
+            echo "Database.Schema: ${SNOWFLAKE_DATABASE}.${SNOWFLAKE_SCHEMA}"
+            echo "Warehouse: ${SNOWFLAKE_WAREHOUSE}"
+            echo
+            echo "✅ SUCCEEDED (${ok_count}):"
+            if (( ok_count > 0 )); then
+              printf ' - %s\n' "${successes[@]}"
+            else
+              echo " - (none)"
+            fi
+            echo
+            echo "❌ FAILED (${fail_count}):"
+            if (( fail_count > 0 )); then
+              printf ' - %s\n' "${failures[@]}"
+            else
+              echo " - (none)"
+            fi
+            echo
+            echo "Detail log attached below."
+            echo
+            echo "===== DETAIL ====="
+            cat snow_exec_detail.log
+          } > sns_message.txt
+      
+          # 4) Publish to SNS
+          aws sns publish \
+            --topic-arn "$SNS_TOPIC_ARN" \
+            --subject "$subject" \
+            --message file://sns_message.txt
+      
+          # Also upload the detailed log as an artifact for debugging
+          echo "Uploading execution detail log..."
+          :
+
+      - name: Upload deploy.sql artifact
+        if: ${{ steps.diff.outputs.changed != '' }}
+        uses: actions/upload-artifact@v4
+        with:
+          name: uat-deploy-sql
+          path: deploy.sql
+      - name: Upload execution detail log
+        if: ${{ steps.diff.outputs.changed != '' }}
+        uses: actions/upload-artifact@v4
+        with:
+          name: snowflake-exec-detail
+          path: snow_exec_detail.log
+
+
