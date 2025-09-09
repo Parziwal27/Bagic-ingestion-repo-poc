@@ -98,22 +98,23 @@ jobs:
         run: |
           set -euo pipefail
           # 1) who/where
-          printf '%s' "$SNOWFLAKE_PASSWORD" | snow --non-interactive sql \
-            -q "SELECT CURRENT_USER(), CURRENT_ROLE(), CURRENT_DATABASE(), CURRENT_SCHEMA();" \
-            --temporary-connection \
-            --account "$SNOWFLAKE_ACCOUNT" --user "$SNOWFLAKE_USERNAME" \
-            --role "$SNOWFLAKE_ROLE" --warehouse "$SNOWFLAKE_WAREHOUSE" \
-            --database "$SNOWFLAKE_DATABASE" --schema "$SNOWFLAKE_SCHEMA" \
-            --password-stdin
+          printf '%s' "$SNOWFLAKE_PASSWORD" | snow sql \
+          -q "SELECT CURRENT_USER(), CURRENT_ROLE(), CURRENT_DATABASE(), CURRENT_SCHEMA();" \
+          --temporary-connection \
+          --account "$SNOWFLAKE_ACCOUNT" --user "$SNOWFLAKE_USERNAME" \
+          --role "$SNOWFLAKE_ROLE" --warehouse "$SNOWFLAKE_WAREHOUSE" \
+          --database "$SNOWFLAKE_DATABASE" --schema "$SNOWFLAKE_SCHEMA" \
+          --authenticator "$SNOWFLAKE_AUTHENTICATOR" \
+          --password-stdin
 
-          # 2) execute the batch
-          printf '%s' "$SNOWFLAKE_PASSWORD" | snow --non-interactive sql \
-            -f deploy.sql \
-            --temporary-connection \
-            --account "$SNOWFLAKE_ACCOUNT" --user "$SNOWFLAKE_USERNAME" \
-            --role "$SNOWFLAKE_ROLE" --warehouse "$SNOWFLAKE_WAREHOUSE" \
-            --database "$SNOWFLAKE_DATABASE" --schema "$SNOWFLAKE_SCHEMA" \
-            --password-stdin
+          printf '%s' "$SNOWFLAKE_PASSWORD" | snow sql \
+          -f deploy.sql \
+          --temporary-connection \
+          --account "$SNOWFLAKE_ACCOUNT" --user "$SNOWFLAKE_USERNAME" \
+          --role "$SNOWFLAKE_ROLE" --warehouse "$SNOWFLAKE_WAREHOUSE" \
+          --database "$SNOWFLAKE_DATABASE" --schema "$SNOWFLAKE_SCHEMA" \
+          --authenticator "$SNOWFLAKE_AUTHENTICATOR" \
+          --password-stdin
 
       - name: Upload deploy.sql artifact
         if: ${{ steps.diff.outputs.changed != '' }}
