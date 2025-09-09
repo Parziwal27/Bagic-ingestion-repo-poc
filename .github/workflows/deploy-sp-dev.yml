@@ -80,7 +80,7 @@ jobs:
           echo "ALTER GIT REPOSITORY ${SNOWFLAKE_GIT_REPO} FETCH;" >> deploy.sql
 
           for f in ${{ steps.diff.outputs.changed }}; do
-            rel="${f#${SQL_ROOT}/}"
+            rel="$f"
             echo "EXECUTE IMMEDIATE FROM @${SNOWFLAKE_GIT_REPO}/branches/${SNOWFLAKE_GIT_BRANCH}/${rel};" >> deploy.sql
           done
 
