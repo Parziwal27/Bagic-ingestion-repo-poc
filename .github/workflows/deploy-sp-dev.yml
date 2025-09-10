@@ -1,15 +1,15 @@
-name: Snowflake Deploy (prod - changed SQL only)
+name: Snowflake Deploy (dev - changed SQL only)
 on:
   push:
-    branches: [ prod ]
+    branches: [ develop ]
     paths:
       - "SQL_DIR/**/*.sql"
-      - ".github/workflows/prod-snowflake-deploy.yml"
+      - ".github/workflows/dev-snowflake-deploy.yml"
 
 env:
-  ENV: prod
-  SNOWFLAKE_GIT_REPO: git_repo_prod
-  SNOWFLAKE_GIT_BRANCH: prod
+  ENV: dev
+  SNOWFLAKE_GIT_REPO: git_repo_dev
+  SNOWFLAKE_GIT_BRANCH: develop
   SQL_ROOT: SQL_DIR
 
 jobs:
@@ -29,15 +29,15 @@ jobs:
           echo "$HOME/.local/bin" >> $GITHUB_PATH
           snow --version
 
-      - name: Export Snowflake creds from GitHub Secrets (PROD)
+      - name: Export Snowflake creds from GitHub Secrets (DEV)
         run: |
-          echo "SNOWFLAKE_ACCOUNT=${{ secrets.SNOWFLAKE_ACCOUNT_PROD }}" >> $GITHUB_ENV
-          echo "SNOWFLAKE_USERNAME=${{ secrets.SNOWFLAKE_USERNAME_PROD }}" >> $GITHUB_ENV
-          echo "SNOWFLAKE_PASSWORD=${{ secrets.SNOWFLAKE_PASSWORD_PROD }}" >> $GITHUB_ENV
-          echo "SNOWFLAKE_ROLE=${{ secrets.SNOWFLAKE_ROLE_PROD }}" >> $GITHUB_ENV
-          echo "SNOWFLAKE_WAREHOUSE=${{ secrets.SNOWFLAKE_WAREHOUSE_PROD }}" >> $GITHUB_ENV
-          echo "SNOWFLAKE_DATABASE=${{ secrets.SNOWFLAKE_DATABASE_PROD }}" >> $GITHUB_ENV # e.g., DEV_DB
-          echo "SNOWFLAKE_SCHEMA=${{ secrets.SNOWFLAKE_SCHEMA_PROD }}" >> $GITHUB_ENV # e.g., APP
+          echo "SNOWFLAKE_ACCOUNT=${{ secrets.SNOWFLAKE_ACCOUNT_DEV }}" >> $GITHUB_ENV
+          echo "SNOWFLAKE_USERNAME=${{ secrets.SNOWFLAKE_USERNAME_DEV }}" >> $GITHUB_ENV
+          echo "SNOWFLAKE_PASSWORD=${{ secrets.SNOWFLAKE_PASSWORD_DEV }}" >> $GITHUB_ENV
+          echo "SNOWFLAKE_ROLE=${{ secrets.SNOWFLAKE_ROLE_DEV }}" >> $GITHUB_ENV
+          echo "SNOWFLAKE_WAREHOUSE=${{ secrets.SNOWFLAKE_WAREHOUSE_DEV }}" >> $GITHUB_ENV
+          echo "SNOWFLAKE_DATABASE=${{ secrets.SNOWFLAKE_DATABASE_DEV }}" >> $GITHUB_ENV # e.g., DEV_DB
+          echo "SNOWFLAKE_SCHEMA=${{ secrets.SNOWFLAKE_SCHEMA_DEV }}" >> $GITHUB_ENV # e.g., APP
 
       - name: List changed SQL files (range or single commit)
         id: diff
@@ -202,7 +202,7 @@ jobs:
         if: ${{ steps.diff.outputs.changed != '' }}
         uses: actions/upload-artifact@v4
         with:
-          name: prod-deploy-sql
+          name: dev-deploy-sql
           path: deploy.sql
 
       - name: Upload execution detail log
