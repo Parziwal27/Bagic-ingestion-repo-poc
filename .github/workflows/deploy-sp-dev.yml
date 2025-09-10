@@ -88,15 +88,14 @@ jobs:
         if: ${{ steps.diff.outputs.changed == '' }}
         run: echo "No SQL changes under ${SQL_ROOT}; nothing to deploy."
 
-      - name: Execute deployment in Snowflake (fail-fast)
+      - name: Execute deployment in Snowflake (continue on individual failures)
         if: ${{ steps.diff.outputs.changed != '' }}
+        shell: bash {0}
         env:
           SNOWFLAKE_AUTHENTICATOR: snowflake
           SNS_TOPIC_ARN: arn:aws:sns:ap-south-1:660061364911:datahub-notifications-sns-topic
         run: |
-          # Remove pipefail to allow individual failures without stopping the script
-          set -uo pipefail
-          
+          # Connection test
           snow sql \
             -q "SELECT CURRENT_USER(), CURRENT_ROLE(), CURRENT_DATABASE(), CURRENT_SCHEMA();" \
             --temporary-connection \
@@ -106,8 +105,9 @@ jobs:
             --authenticator "$SNOWFLAKE_AUTHENTICATOR" \
             --password "$SNOWFLAKE_PASSWORD"
 
+          # Setup commands (this should succeed)
           snow sql \
-            -f deploy.sql \
+            -q "USE ROLE ${SNOWFLAKE_ROLE}; USE WAREHOUSE ${SNOWFLAKE_WAREHOUSE}; USE DATABASE ${SNOWFLAKE_DATABASE}; USE SCHEMA ${SNOWFLAKE_SCHEMA}; ALTER GIT REPOSITORY ${SNOWFLAKE_GIT_REPO} FETCH;" \
             --temporary-connection \
             --account "$SNOWFLAKE_ACCOUNT" --user "$SNOWFLAKE_USERNAME" \
             --role "$SNOWFLAKE_ROLE" --warehouse "$SNOWFLAKE_WAREHOUSE" \
@@ -119,7 +119,7 @@ jobs:
           failures=()
           : > snow_exec_detail.log
 
-          # 2) Run each changed SQL file individually
+          # Run each changed SQL file individually
           while IFS= read -r f; do
             [[ -z "$f" ]] && continue
             rel="${f#./}" # keep SQL_DIR/ in place; only strip leading ./ if any
@@ -151,7 +151,7 @@ jobs:
             echo >> snow_exec_detail.log
           done < changed_files.txt
 
-          # 3) Compose SNS message
+          # Compose SNS message
           ok_count=${#successes[@]}
           fail_count=${#failures[@]}
           subject="Snowflake deploy (${ENV}) ✔ ${ok_count} ok / ✖ ${fail_count} failed"
@@ -181,16 +181,17 @@ jobs:
             cat snow_exec_detail.log
           } > sns_message.txt
 
-          # 4) Publish to SNS
+          # Publish to SNS
           aws sns publish \
             --topic-arn "$SNS_TOPIC_ARN" \
             --subject "$subject" \
             --message file://sns_message.txt
 
-          # Also upload the detailed log as an artifact for debugging
-          echo "Uploading execution detail log..."
+          echo "Execution completed. Summary:"
+          echo "✅ Succeeded: ${ok_count} files"
+          echo "❌ Failed: ${fail_count} files"
           
-          # Fail the job only if there were any failures (optional - remove if you want job to always succeed)
+          # Optionally fail the job if there were failures (remove these lines if you want job to always succeed)
           if (( fail_count > 0 )); then
             echo "⚠️  Some SQL files failed to execute. Check the detailed logs for more information."
             echo "Failed files: ${failures[*]}"
