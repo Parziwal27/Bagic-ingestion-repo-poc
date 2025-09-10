@@ -127,8 +127,7 @@ jobs:
             
             echo "---- Executing: ${stage_path}" | tee -a snow_exec_detail.log
             
-            # Disable pipefail temporarily for this command to handle errors gracefully
-            set +e
+            # Execute the SQL file and capture output and exit code
             out=$(snow sql \
               -q "EXECUTE IMMEDIATE FROM ${stage_path};" \
               --temporary-connection \
@@ -138,7 +137,6 @@ jobs:
               --authenticator "$SNOWFLAKE_AUTHENTICATOR" \
               --password "$SNOWFLAKE_PASSWORD" 2>&1)
             exit_code=$?
-            set -e
             
             if [ $exit_code -eq 0 ]; then
               successes+=("$rel")
