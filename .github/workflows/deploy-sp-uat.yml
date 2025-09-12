@@ -211,4 +211,3 @@ jobs:
         with:
           name: snowflake-exec-detail
           path: snow_exec_detail.log
-
