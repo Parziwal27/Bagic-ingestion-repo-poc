@@ -69,6 +69,11 @@ jobs:
           fi
           aws s3 cp "$SNOWFLAKE_PRIVATE_KEY_URI" snowflake_rsa_key.p8
           chmod 600 snowflake_rsa_key.p8
+          if grep -q "ENCRYPTED" snowflake_rsa_key.p8 && [[ -z "${SNOWFLAKE_PRIVATE_KEY_PASSPHRASE:-}" ]]; then
+            echo "The downloaded Snowflake private key is encrypted but SNOWFLAKE_PRIVATE_KEY_PASSPHRASE_DEV is empty." >&2
+            echo "Please set the passphrase secret or provide an unencrypted PKCS8 key." >&2
+            exit 1
+          fi
           echo "SNOWFLAKE_PRIVATE_KEY_PATH=${PWD}/snowflake_rsa_key.p8" >> $GITHUB_ENV
 
       - name: List changed SQL files (range or single commit)
