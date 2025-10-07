@@ -148,6 +148,7 @@ jobs:
             -o friendly=false
             -o output_format=tsv
             -o timing=false
+            -o authenticator=snowflake_jwt
           )
           if [[ -n "${SNOWFLAKE_PRIVATE_KEY_PASSPHRASE:-}" ]]; then
             snowsql_base+=(--private-key-passphrase "$SNOWFLAKE_PRIVATE_KEY_PASSPHRASE")
@@ -170,10 +171,7 @@ jobs:
 
             echo "---- Executing file: ${rel}" | tee -a snow_exec_detail.log
 
-            out=$("${snowsql_base[@]}" -f "$rel" 2>&1)
-            exit_code=$?
-
-            if [ $exit_code -eq 0 ]; then
+            if out=$("${snowsql_base[@]}" -f "$rel" 2>&1); then
               successes+=("$rel")
               echo "SUCCESS: ${out}" >> snow_exec_detail.log
             else
@@ -184,6 +182,9 @@ jobs:
             fi
             echo >> snow_exec_detail.log
           done < changed_files.txt
+          echo "__SUMMARY__" >> snow_exec_detail.log
+          echo "SUCCESS_COUNT=${#successes[@]}" >> snow_exec_detail.log
+          echo "FAIL_COUNT=${#failures[@]}" >> snow_exec_detail.log
 
           ok_count=${#successes[@]}
           fail_count=${#failures[@]}
