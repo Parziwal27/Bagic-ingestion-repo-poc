@@ -138,14 +138,14 @@ jobs:
             -w "$SNOWFLAKE_WAREHOUSE"
             -d "$SNOWFLAKE_DATABASE"
             -s "$SNOWFLAKE_SCHEMA"
-            -k "$SNOWFLAKE_PRIVATE_KEY_PATH"
+            --private-key-path "$SNOWFLAKE_PRIVATE_KEY_PATH"
             -o exit_on_error=true
             -o friendly=false
             -o output_format=tsv
             -o timing=false
           )
           if [[ -n "${SNOWFLAKE_PRIVATE_KEY_PASSPHRASE:-}" ]]; then
-            snowsql_base+=(-P "$SNOWFLAKE_PRIVATE_KEY_PASSPHRASE")
+            snowsql_base+=(--private-key-passphrase "$SNOWFLAKE_PRIVATE_KEY_PASSPHRASE")
           fi
 
           echo "Testing Snowflake connection..."
