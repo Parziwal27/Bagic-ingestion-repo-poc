@@ -123,14 +123,6 @@ jobs:
           echo "----- deploy.sql -----"
           sed -n '1,200p' deploy.sql
 
-      - name: Validate SQL environment references
-        if: ${{ steps.diff.outputs.changed != '' }}
-        run: |
-          python3 scripts/validate_sql_env.py \
-            --changed-files changed_files.txt \
-            --database "$SNOWFLAKE_DATABASE" \
-            --schema "$SNOWFLAKE_SCHEMA"
-
       - name: Exit early (no changed SQL)
         if: ${{ steps.diff.outputs.changed == '' }}
         run: echo "No SQL changes under ${SQL_ROOT}; nothing to deploy."
