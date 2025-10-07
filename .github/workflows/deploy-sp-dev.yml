@@ -148,7 +148,6 @@ jobs:
             -o friendly=false
             -o output_format=tsv
             -o timing=false
-            -o authenticator=snowflake_jwt
           )
           if [[ -n "${SNOWFLAKE_PRIVATE_KEY_PASSPHRASE:-}" ]]; then
             snowsql_base+=(--private-key-passphrase "$SNOWFLAKE_PRIVATE_KEY_PASSPHRASE")
