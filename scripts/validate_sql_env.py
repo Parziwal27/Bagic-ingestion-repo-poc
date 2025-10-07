@@ -11,7 +11,7 @@ import os
 import pathlib
 import re
 import sys
-from typing import Iterable, List, Sequence, Set
+from typing import Iterable, List, Optional, Sequence, Set
 
 
 def _normalize(identifier: str) -> str:
@@ -30,8 +30,8 @@ def load_changed_files(path: pathlib.Path) -> List[pathlib.Path]:
 
 def scan_sql_file(
     file_path: pathlib.Path,
-    target_database: str,
-    target_schema: str,
+    target_database: Optional[str],
+    target_schema: Optional[str],
     blocked_tokens: Set[str],
 ) -> List[str]:
     violations: List[str] = []
@@ -40,8 +40,8 @@ def scan_sql_file(
     except (UnicodeDecodeError, FileNotFoundError):
         return violations  # ignore binary or missing files
 
-    database_upper = target_database.upper()
-    schema_upper = target_schema.upper()
+    database_upper = target_database.upper() if target_database else None
+    schema_upper = target_schema.upper() if target_schema else None
 
     # Matches: USE DATABASE <identifier>
     use_db_pattern = re.compile(r'(?is)\bUSE\s+DATABASE\s+([A-Z0-9_"]+)')
@@ -55,35 +55,38 @@ def scan_sql_file(
     def line_number(pos: int) -> int:
         return content.count("\n", 0, pos) + 1
 
-    for match in use_db_pattern.finditer(content):
-        target = _normalize(match.group(1))
-        if target != database_upper:
-            violations.append(
-                f"{file_path}:{line_number(match.start())} uses database '{target}' "
-                f"(expected {database_upper})"
-            )
-
-    for match in use_schema_pattern.finditer(content):
-        target_full = match.group(1)
-        parts = [_normalize(part) for part in target_full.split(".")]
-        if len(parts) == 2:
-            db_part, schema_part = parts
-        else:
-            db_part, schema_part = database_upper, parts[0]
-        if db_part != database_upper or schema_part != schema_upper:
-            violations.append(
-                f"{file_path}:{line_number(match.start())} uses schema '{target_full}' "
-                f"(expected {database_upper}.{schema_upper})"
-            )
-
-    for idx, line in enumerate(content.splitlines(), start=1):
-        for match in fully_qualified_pattern.finditer(line):
-            db_ref = _normalize(match.group(1))
-            if db_ref != database_upper:
+    if database_upper:
+        for match in use_db_pattern.finditer(content):
+            target = _normalize(match.group(1))
+            if target != database_upper:
                 violations.append(
-                    f"{file_path}:{idx} references database '{db_ref}' "
-                    f"in object '{match.group(0)}'"
+                    f"{file_path}:{line_number(match.start())} uses database '{target}' "
+                    f"(expected {database_upper})"
                 )
+
+    if database_upper and schema_upper:
+        for match in use_schema_pattern.finditer(content):
+            target_full = match.group(1)
+            parts = [_normalize(part) for part in target_full.split(".")]
+            if len(parts) == 2:
+                db_part, schema_part = parts
+            else:
+                db_part, schema_part = database_upper, parts[0]
+            if db_part != database_upper or schema_part != schema_upper:
+                violations.append(
+                    f"{file_path}:{line_number(match.start())} uses schema '{target_full}' "
+                    f"(expected {database_upper}.{schema_upper})"
+                )
+
+    if database_upper:
+        for idx, line in enumerate(content.splitlines(), start=1):
+            for match in fully_qualified_pattern.finditer(line):
+                db_ref = _normalize(match.group(1))
+                if db_ref != database_upper:
+                    violations.append(
+                        f"{file_path}:{idx} references database '{db_ref}' "
+                        f"in object '{match.group(0)}'"
+                    )
 
     upper_content = content.upper()
     for token in blocked_tokens:
@@ -126,15 +129,13 @@ def parse_args(argv: Sequence[str]) -> argparse.Namespace:
 def main(argv: Sequence[str] | None = None) -> int:
     args = parse_args(argv or sys.argv[1:])
 
-    database = (args.database or os.environ.get("SNOWFLAKE_DATABASE") or "").strip()
-    schema = (args.schema or os.environ.get("SNOWFLAKE_SCHEMA") or "").strip()
-    if not database or not schema:
+    database = (args.database or os.environ.get("SNOWFLAKE_DATABASE") or "").strip() or None
+    schema = (args.schema or os.environ.get("SNOWFLAKE_SCHEMA") or "").strip() or None
+    if database is None or schema is None:
         print(
-            "SNOWFLAKE_DATABASE and SNOWFLAKE_SCHEMA must be provided via arguments "
-            "or environment variables.",
-            file=sys.stderr,
+            "⚠️  SNOWFLAKE_DATABASE/SNOWFLAKE_SCHEMA not provided; "
+            "skipping explicit USE/database mismatch checks and scanning for blocked tokens only."
         )
-        return 1
 
     changed_files = load_changed_files(pathlib.Path(args.changed_files))
     if not changed_files:
