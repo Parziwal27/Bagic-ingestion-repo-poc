@@ -1,0 +1,8 @@
+[submodule "Ingestion"]
+	path = Ingestion
+	url = https://github.com/Parziwal27/Bagic-ingestion-Ingestion.git
+	branch = main
+[submodule "Transformation"]
+	path = Transformation
+	url = https://github.com/Parziwal27/Bagic-ingestion-Transformation.git
+	branch = main
